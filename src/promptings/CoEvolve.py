@@ -23,37 +23,101 @@ import numpy as np
 from forms import * # Assuming this imports your form models like PlanOutput, etc.
 from multi_thread import multi_thread_task_dict
 class AnalysisReflection:
+    """
+    Paper-faithful RT: maintains a persistent debugging strategy R(t) across iterations.
+    Updates every iteration based on:
+      - R(t-1)
+      - diagnosis E_X(t) for selected target X(t) (plan or code)
+      - problem P
+      - current target state X(t) (plan or code)
+      - failure log F(t)
+    """
     def __init__(self):
-        self.historical_data = {} # Dictionary to store iteration data
+        self.strategy = ""          # R(t)
+        self.historical_data = {}   # optional logs
+
     def update_historical_data(self, iteration: int, data: Dict):
-        """Store data for the given iteration."""
         self.historical_data[iteration] = data
-    def generate_prompt_for_plan_reflection(self, iteration: int, error_analysis: Dict, problem: str, problem_understanding: str, plan: str, historical_logs: Dict) -> str:
-        """Generate a conversational prompt for plan debugging, evolving from R(t-1)."""
-        previous_reflection = historical_logs.get('analysis_reflection', 'No previous analysis reflection available')
-        insights = error_analysis.get('insights', '')
-        success_rate = error_analysis.get('success_rate', 0.0)
-        test_log = error_analysis.get("test_results", "")
-        success_rate_str = f"{success_rate:.2f}%"
+
+    def update_strategy(
+        self,
+        iteration: int,
+        target: str,                 # "plan" or "code"
+        diagnosis: Dict,             # E_X(t) (insights + optional simulation)
+        problem: str,
+        target_state: str,           # π(t) or c(t)
+        failure_log: str,
+        gpt_chat,
+        max_attempts: int = 1,
+        verbose: bool = True
+    ) -> Tuple[str, int, int]:
+        """
+        Returns updated R(t) and token usage.
+        """
+        prev = self.strategy if self.strategy else "No previous strategy."
+        insights = diagnosis.get("insights", "")
+        simulation = diagnosis.get("simulation", "")
+
         prompt = f"""
-You are a **debugging assistant** for a competitive programming problem. The plan is having problems, your task is to generate reflection on improving it.
-# Context Provided:
-## Problem:
+You are maintaining a **stateful debugging strategy** across iterations for a competitive programming solver.
+
+## Problem
 {problem}
-## Current Plan:
-{plan}
-## Current Test Log:
-{test_log}
-## Previous Reflection Prompt on Improving Plan From Previous Iteration:
-{previous_reflection}
-## New Insights:
+
+## Current refinement target
+Target = {target}
+
+## Current target state (the thing to be refined)
+{target_state}
+
+## Failure log (always correct)
+{failure_log}
+
+## Current diagnosis for this target (E_X)
+### Simulation (may be empty)
+{simulation}
+
+### Insights
 {insights}
-Write a new reflection prompt to correct the plan, use latest insights and previous reflection as context, but do not repeat or copy the old reflection.
-⚠️ **IMPORTANT:**
-- **Do not generate code.**
-- **The test cases are always correct — never question their validity.**
-"""
-        return prompt
+
+## Previous debugging strategy R(t-1)
+{prev}
+
+# Task
+Write an **updated debugging strategy R(t)** that:
+- Incorporates the new diagnosis and failure evidence
+- Builds on prior strategy but does NOT repeat it verbatim
+- States concrete next actions/hypotheses to try (bullet points are fine)
+- Avoids ineffective repeated fixes
+- Does NOT generate code or a new plan
+
+Return ONLY the updated strategy text.
+""".strip()
+
+        pr_tok = 0
+        com_tok = 0
+        for attempt in range(max_attempts):
+            try:
+                if verbose:
+                    print(f"[RT] Updating strategy, attempt {attempt+1}, target={target}")
+                resp, p, c = gpt_chat([{"role": "user", "content": prompt}])
+                pr_tok += p
+                com_tok += c
+                self.strategy = resp.strip()
+                # save logs
+                self.update_historical_data(iteration, {
+                    "target": target,
+                    "diagnosis": diagnosis,
+                    "failure_log": failure_log,
+                    "strategy": self.strategy
+                })
+                return self.strategy, pr_tok, com_tok
+            except Exception as e:
+                if verbose:
+                    print(f"[RT] Error updating strategy: {e}")
+                if attempt == max_attempts - 1:
+                    # keep previous strategy if update fails
+                    return self.strategy, pr_tok, com_tok
 class CoEvolve(BaseStrategy):
     def __init__(
         self,
@@ -380,6 +444,7 @@ Provide a **single concise insight** (4-5 sentences) that includes:
             try:
                 response, pr_tok_temp, com_tok_temp = self.gpt_chat(input_prompt)
                 print(f"Response from merged analyses: {response}")
+
                 pr_tok += pr_tok_temp
                 com_tok += com_tok_temp
                 plan_simulation = self.parse_key_from_md(response, "Plan Analysis").split("#### Insight")[0].split("#### Simulation")[1].strip() if "#### Insight" in self.parse_key_from_md(response, "Plan Analysis") else ""
@@ -500,7 +565,7 @@ Provide a **single concise insight** (4-5 sentences) that includes:
             if self.verbose:
                 print(f"Step: Scores API call attempt {attempt + 1}")
             try:
-                response, _, _ = self.gpt_chat(messages)
+                response, pr_tok, com_tok = self.gpt_chat(messages)
                 item['api_calls'] += 1
                 json_str = self._extract_json_string(response)
                 if not json_str:
@@ -534,14 +599,15 @@ Provide a **single concise insight** (4-5 sentences) that includes:
                             print(f"[CONF] {d}/{name}: {confidence_result[d][name].confidence:.3f}")
                         for key, obj in consistency_result[d].items():
                             print(f"[CONS] {d}/{key}: {obj.consistency:.3f}")
-                return confidence_result, consistency_result
+                return confidence_result, consistency_result, pr_tok, com_tok
             except Exception as e:
                 print(f"Error in get_all_scores attempt {attempt + 1}: {e}")
                 if attempt == self.max_attempts - 1:
                     print("Step: Max attempts reached, returning default scores")
                     return (
                         {d: {n: ConfidenceOutput() for n in analysis_names} for d in decisions},
-                        {d: {f"{n1}-{n2}": ConsistencyOutput() for n1, n2 in pairs} for d in decisions}
+                        {d: {f"{n1}-{n2}": ConsistencyOutput() for n1, n2 in pairs} for d in decisions},
+                        0,0
                     )
     def fast_collaborative_decision(self, plan: str, code: str, outcomes: str, item) -> str:
         """
@@ -573,7 +639,10 @@ Provide a **single concise insight** (4-5 sentences) that includes:
             decisions = ['update plan', 'update code only']
         
             # Compute all confidence and consistency scores in one API call
-            confidence_scores, consistency_scores = self.get_all_scores(decisions, analyses)
+            confidence_scores, consistency_scores, pr_tok, com_tok = self.get_all_scores(decisions, analyses)
+            merged_result["pr_tok"] += pr_tok
+            merged_result["com_tok"] += com_tok
+            item['api_calls'] += 1
         
             scores = {}
             for decision in decisions:
@@ -611,126 +680,161 @@ Provide a **single concise insight** (4-5 sentences) that includes:
         except Exception as e:
             print(f"Error in collaborative_decision: {e}")
             return "update code only", merged_result
-    def debug_plan(self, iteration: int, plan: str, error_analysis: Dict, problem: str, problem_understanding: str, decision: str):
+    def debug_plan(self, iteration: int, plan: str, diagnosis: Dict, problem: str, decision: str, failure_log: str):
         if self.verbose:
             print(f"Step: Debugging plan at iteration {iteration}")
-        prev_logs = self.rt.historical_data.get(iteration - 1, {})
-        rt_prompt = self.rt.generate_prompt_for_plan_reflection(
-            iteration, error_analysis, problem, problem_understanding, plan, historical_logs=prev_logs
+    
+        # Update RT strategy for target=plan (paper Eq.7)
+        pr0=0, com0=0
+        R_t, pr1, com1 = self.rt.update_strategy(
+            iteration=iteration,
+            target="plan",
+            diagnosis=diagnosis,
+            problem=problem,
+            target_state=plan,
+            failure_log=failure_log,
+            gpt_chat=self.gpt_chat,
+            max_attempts=self.max_attempts,
+            verbose=self.verbose
         )
-        try:
-            if self.verbose:
-                print("Step: Generating analysis reflection for plan")
-                print(f"Prompt for analysis reflection: {rt_prompt}")
-            analysis_reflection, _, _ = self.gpt_chat([{
-                'role': 'user',
-                'content': rt_prompt
-            }])
-            if self.verbose:
-                print("Step: Analysis reflection generated")
-                print(f"Reflection: {analysis_reflection}...")
-        except Exception as e:
-            print(f"Error generating analysis reflection for plan: {e}")
-            analysis_reflection = "Error generating analysis reflection"
+    
+        # Minimal change: add Current Debugging Strategy
         update_prompt = [
             {
                 'role': 'user',
                 'content': f"""You are a programmer tasked with generating appropriate plan to solve a given problem using the **{self.language}** programming language. You already have a wrong plan. Correct it so that it can generate correct plan.
-## Problem
-{problem}
-## Plan Critique
-{analysis_reflection}
-Your response must be structured as follows:
-## New Plan
-- Write down a detailed, step-by-step modified plan to solve the **original problem**.
-- Ensure each step logically follows from the previous one.
-**IMPORTANT Instruction:**
-- Your response must contain only the plan.
-- Do not add any explanation.
-- Do not generate code.
-"""
+    
+    ## Problem
+    {problem}
+    
+    ## Current Debugging Strategy
+    {R_t}
+    
+    ## Plan Critique
+    {diagnosis.get('insights', '')}
+    
+    ## Current Test Log
+    {failure_log}
+    
+    Your response must be structured as follows:
+    ## New Plan
+    - Write down a detailed, step-by-step modified plan to solve the **original problem**.
+    - Ensure each step logically follows from the previous one.
+    
+    **IMPORTANT Instruction:**
+    - Your response must contain only the plan.
+    - Do not add any explanation.
+    - Do not generate code.
+    """
             }
         ]
+    
         try:
             if self.verbose:
                 print("Step: Making API call for plan update")
-            updated_response, _, _ = self.gpt_chat(update_prompt)
+            updated_response, pr2, com2 = self.gpt_chat(update_prompt)
             revised_plan = updated_response.strip()
-            if self.verbose:
-                print("Step: Plan updated")
-                print(f"Revised plan: {revised_plan}...")
         except Exception as e:
             print(f"Error debugging plan: {e}")
             revised_plan = plan
-        self.rt.update_historical_data(iteration, {
-            'previous_plan': plan,
-            'previous_success_rate': error_analysis.get('success_rate'),
-            'previous_iteration': iteration - 1,
-            'analysis_reflection': analysis_reflection
-        })
+            pr0 = 0, com0 =0
+        pr0 += (pr1+pr2)
+        com0 += (com1+com2)
+        return revised_plan, pr0, com0
+    def debug_code(
+    self,
+    iteration: int,
+    plan: str,
+    code: str,
+    diagnosis: Dict,
+    problem: str,
+    decision: str,
+    failure_log: str,
+):
         if self.verbose:
-            print("Step: Historical data updated for plan")
-        return revised_plan, analysis_reflection
-    def debug_code(self, iteration: int, plan: str, code: str, error_analysis: Dict, problem: str, problem_understanding: str, decision: str):
-        """
-        Debug the code using only code analysis insights, without reflection analysis.
-        """
-        if self.verbose:
-            print(f"Step: Debugging code at iteration {iteration} using code analysis only")
-        std_input_prompt = """
-    - Strictly follow the sample input and output format.
-    - The input should be taken from Standard input and output should be given to standard output. If you are writing a function then after the function definition take the input using `input()` function then call the function with specified parameters and finally print the output of the function.
-    - For array input parse the array then pass it to the function. Parsing technique is given in the sample input output format section.
-    - Do not add extra print statement otherwise it will failed the test cases.
-         """ if isinstance(self.data, (APPSDataset, CodeContestDataset, XCodeDataset, LCBDataset)) else ""
-        # Extract insights and test results from error_analysis
-        insights = error_analysis.get('insights', 'No insights provided')
-        test_log = error_analysis.get('test_results', 'No test results provided')
-        # Prompt for code refinement using code analysis insights directly
+            print(f"Step: Debugging code at iteration {iteration}")
+    
+        # Update RT strategy for target=code (paper Eq.7)
+        R_t, pr2, com2 = self.rt.update_strategy(
+            iteration=iteration,
+            target="code",
+            diagnosis=diagnosis,
+            problem=problem,
+            target_state=code,
+            failure_log=failure_log,
+            gpt_chat=self.gpt_chat,
+            max_attempts=self.max_attempts,
+            verbose=self.verbose,
+        )
+        pr0=0,com0=0
+        std_input_prompt = (
+            """..."""
+            if isinstance(
+                self.data, (APPSDataset, CodeContestDataset, XCodeDataset, LCBDataset)
+            )
+            else ""
+        )
+    
+        insights = diagnosis.get("insights", "No insights provided")
+    
         code_prompt = [
             {
                 "role": "user",
                 "content": f"""You are a programmer who has received a solution of a problem written in **{self.language}** that fails to pass certain test cases. Your task is to modify the code in such a way so that it can pass all the test cases. Do not generate same code.
-## Problem:
-{problem}
-## Current Plan
-{plan}
-## Buggy Code
-```{self.language}
-{code}
-```
-## Test Log
-{test_log}
-## Code Critique
-{insights}
-**Task:** Using the provided code critique and test log, **refine the code** to correct the identified issues.
-**IMPORTANT:** Your response must contain **only the {self.language} code** to solve this problem:
-```{self.language}
-# Your corrected code, with comments explaining each correction.
-```
-**Important Instructions:**
-- Strictly follow the instructions.
-- Do not add testing code for example assert statement in your code.
-- Do not be overconfident that the generated code is correct. It is wrong.
-- The modified **{self.language}** code must be enclosed within triple backticks
-{std_input_prompt}
-"""
+    
+    ## Problem:
+    {problem}
+    
+    ## Current Plan
+    {plan}
+    
+    ## Current Debugging Strategy
+    {R_t}
+    
+    ## Buggy Code
+    ```{self.language}
+    {code}
+    ````
+    
+    ## Test Log
+    
+    {failure_log}
+    
+    ## Code Critique
+    
+    {insights}
+    
+    **Task:** Using the provided code critique and test log, **refine the code** to correct the identified issues.
+    
+    **IMPORTANT:** Your response must contain **only the {self.language} code** to solve this problem:
+    
+    # Your corrected code, with comments explaining each correction.
+    
+    **Important Instructions:**
+    
+    * Strictly follow the instructions.
+    * Do not add testing code for example assert statement in your code.
+    * Do not be overconfident that the generated code is correct. It is wrong.
+    * The modified **{self.language}** code must be enclosed within triple backticks
+      {std_input_prompt}
+      """,
             }
         ]
         try:
             if self.verbose:
                 print("Step: Making API call for code update")
-            updated_response, _, _ = self.gpt_chat(code_prompt)
-            revised_code = self.parse_code(updated_response)
-            if self.verbose:
-                print("Step: Code updated")
-                print(f"Revised code: {revised_code}...")
+                updated_response, pr1, com1 = self.gpt_chat(code_prompt)
+                revised_code = self.parse_code(updated_response)
+                
         except Exception as e:
             print(f"Error debugging code: {e}")
             revised_code = code
-        if self.verbose:
-            print("Step: Historical data updated for code")
-        return revised_code, insights
+            pr0=0,com0=0
+        pr0+=(pr1+pr2)
+        com0+=(com1+com2)
+    
+        return revised_code, pr0,com0
+
     def _inner_run(self, item):
         self.rt.historical_data = {}
         if self.verbose:
@@ -795,55 +899,65 @@ Your response must be structured as follows:
                     except Exception as e:
                         print(f"Error in decision: {e}")
                         decision = "update code only"
-                    if decision == 'update plan':
-                        try:
-                            A_plan = merged_result['plan_analysis']
-                            revised_plan, _ = self.debug_plan(i, current_planning, {
-                                'insights': A_plan['insights'],
-                                'test_results': current_test_log,
-                                'success_rate': current_code_score * 100,
-                            }, problem_text, problem_understanding, decision)
-                            codes_with_scores, pr_tok_code, com_tok_code = self.generate_code_from_plan(item, revised_plan, problem_text, sample_io_prompt, "", problem_understanding)
+                        if decision == "update plan":
+                            diagnosis = merged_result.get("plan_analysis", {})
+                            # RT updated + plan refined (only plan is updated here)
+                            revised_plan, pr_0, com_0 = self.debug_plan(
+                                iteration=i,
+                                plan=current_planning,
+                                diagnosis=diagnosis,
+                                problem=problem_text,
+                                decision=decision,
+                                failure_log=current_test_log
+                            )
+                            pr_tok += pr_0
+                            com_tok += com_0
+                            current_planning = revised_plan
+                    
+                            # After plan update, generate code from updated plan (this is consistent with applying A_code after π changes)
+                            codes_with_scores, pr_tok_code, com_tok_code = self.generate_code_from_plan(
+                                item, current_planning, problem_text, sample_io_prompt, "", problem_understanding
+                            )
                             pr_tok += pr_tok_code
                             com_tok += com_tok_code
+                    
                             if codes_with_scores:
-                                for new_code, new_score, new_test_log in codes_with_scores:
-                                    all_codes_with_scores.append((new_code, new_score))
-                                    if self.verbose:
-                                        print(f"Step: Added updated code after plan debug - Score: {new_score}")
-                                    if new_score == 1.0:
-                                        if self.verbose:
-                                            print(f"Step: Updated code passed samples after plan debug")
-                                        return new_code, pr_tok, com_tok
-                                # Update current for next iteration (pick the best from new codes)
                                 best_new = max(codes_with_scores, key=lambda x: x[1])
                                 current_code, current_code_score, current_test_log = best_new
-                            current_planning = revised_plan
-                        except Exception as e:
-                            print(f"Error updating plan: {e}")
-                            continue
-                    else:
-                        try:
-                            A_code = merged_result['code_analysis']
-                            revised_code, _ = self.debug_code(i, current_planning, current_code, {
-                                'insights': A_code['insights'],
-                                'test_results': current_test_log,
-                                'success_rate': current_code_score * 100,
-                            }, problem_text, problem_understanding, decision)
+                                all_codes_with_scores.append((current_code, current_code_score))
+                                if current_code_score == 1.0:
+                                    return current_code, pr_tok, com_tok
+                    
+                        else:
+                            diagnosis = merged_result.get("code_analysis", {})
+                            # RT updated + code refined (only code is updated here)
+                            revised_code, pr_0, com_0 = self.debug_code(
+                                iteration=i,
+                                plan=current_planning,
+                                code=current_code,
+                                diagnosis=diagnosis,
+                                problem=problem_text,
+                                decision=decision,
+                                failure_log=current_test_log
+                            )
+                            pr_tok += pr_0
+                            com_tok += com_0
+                    
+                            # Evaluate updated code
                             try:
                                 passed, new_test_log = self.data.evaluate_sample_io(item, revised_code, self.language)
                                 new_score = 1.0 if passed else 0.0
                             except Exception as e:
-                                print(f"Error evaluating updated code: {e}")
                                 new_test_log = f"Evaluation failed: {e}"
                                 new_score = 0.0
-                            all_codes_with_scores.append((revised_code, new_score))
-                            if self.verbose:
-                                print(f"Step: Added updated code after code debug - Score: {new_score}")
-                            if new_score == 1.0:
-                                if self.verbose:
-                                    print(f"Step: Updated code passed samples after code debug")
-                                return revised_code, pr_tok, com_tok
+                    
+                            current_code = revised_code
+                            current_code_score = new_score
+                            current_test_log = new_test_log
+                            all_codes_with_scores.append((current_code, current_code_score))
+                    
+                            if current_code_score == 1.0:
+                                return current_code, pr_tok, com_tok
                             # Update current for next iteration
                             current_code = revised_code
                             current_code_score = new_score
