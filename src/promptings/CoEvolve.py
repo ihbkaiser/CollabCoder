@@ -566,7 +566,7 @@ Provide a **single concise insight** (4-5 sentences) that includes:
                 print(f"Step: Scores API call attempt {attempt + 1}")
             try:
                 response, pr_tok, com_tok = self.gpt_chat(messages)
-                item['api_calls'] += 1
+                # item['api_calls'] += 1
                 json_str = self._extract_json_string(response)
                 if not json_str:
                     if self.verbose:
@@ -896,45 +896,64 @@ Provide a **single concise insight** (4-5 sentences) that includes:
                 for i in range(1, self.t + 1):
                     if self.verbose:
                         print(f"Step: Iteration {i} for plan {plan_idx}")
+
+                    # 1) Make a decision (try), otherwise fallback safely
+                    merged_result = {
+                        'plan_analysis': {'insights': '', 'simulation': ''},
+                        'code_analysis': {'insights': '', 'simulation': ''},
+                        'content_analysis': {'insights': ''},
+                        'pr_tok': 0,
+                        'com_tok': 0
+                    }
                     try:
-                        decision, merged_result = self.fast_collaborative_decision(current_planning, current_code, current_test_log, item)
+                        decision, merged_result = self.fast_collaborative_decision(
+                            current_planning, current_code, current_test_log, item
+                        )
                         if self.verbose:
                             print(f"Step: Decision made: {decision}")
                     except Exception as e:
                         print(f"Error in decision: {e}")
-                        decision = "update code only"
+                        decision = "update code only"  # safest default
+
+                    # 2) Apply the decision (this MUST happen on the normal path too)
+                    try:
                         if decision == "update plan":
                             diagnosis = merged_result.get("plan_analysis", {})
-                            # RT updated + plan refined (only plan is updated here)
+
+                            # RT updated + plan refined
                             revised_plan, pr_0, com_0 = self.debug_plan(
                                 iteration=i,
                                 plan=current_planning,
                                 diagnosis=diagnosis,
                                 problem=problem_text,
                                 decision=decision,
-                                failure_log=current_test_log
+                                failure_log=current_test_log,
                             )
                             pr_tok += pr_0
                             com_tok += com_0
                             current_planning = revised_plan
-                    
-                            # After plan update, generate code from updated plan (this is consistent with applying A_code after π changes)
+
+                            # After plan update, regenerate code from updated plan
                             codes_with_scores, pr_tok_code, com_tok_code = self.generate_code_from_plan(
                                 item, current_planning, problem_text, sample_io_prompt, "", problem_understanding
                             )
                             pr_tok += pr_tok_code
                             com_tok += com_tok_code
-                    
+
                             if codes_with_scores:
                                 best_new = max(codes_with_scores, key=lambda x: x[1])
                                 current_code, current_code_score, current_test_log = best_new
                                 all_codes_with_scores.append((current_code, current_code_score))
+
                                 if current_code_score == 1.0:
                                     return current_code, pr_tok, com_tok
-                    
-                        else:
+                            else:
+                                # if regeneration fails, fall back to updating code next loop
+                                decision = "update code only"
+
+                        else:  # "update code only" (default)
                             diagnosis = merged_result.get("code_analysis", {})
-                            # RT updated + code refined (only code is updated here)
+
                             revised_code, pr_0, com_0 = self.debug_code(
                                 iteration=i,
                                 plan=current_planning,
@@ -942,11 +961,11 @@ Provide a **single concise insight** (4-5 sentences) that includes:
                                 diagnosis=diagnosis,
                                 problem=problem_text,
                                 decision=decision,
-                                failure_log=current_test_log
+                                failure_log=current_test_log,
                             )
                             pr_tok += pr_0
                             com_tok += com_0
-                    
+
                             # Evaluate updated code
                             try:
                                 passed, new_test_log = self.data.evaluate_sample_io(item, revised_code, self.language)
@@ -954,21 +973,21 @@ Provide a **single concise insight** (4-5 sentences) that includes:
                             except Exception as e:
                                 new_test_log = f"Evaluation failed: {e}"
                                 new_score = 0.0
-                    
+
                             current_code = revised_code
                             current_code_score = new_score
                             current_test_log = new_test_log
                             all_codes_with_scores.append((current_code, current_code_score))
-                    
+
                             if current_code_score == 1.0:
                                 return current_code, pr_tok, com_tok
-                            # Update current for next iteration
-                            current_code = revised_code
-                            current_code_score = new_score
-                            current_test_log = new_test_log
+
                     except Exception as e:
-                        print(f"Error updating code: {e}")
+                        print(f"Error applying update at iteration {i}: {e}")
+                        # keep current_* as-is and continue
                         continue
+
+
         # At the end, select the code with the highest score
         if all_codes_with_scores:
             best_code, best_score = max(all_codes_with_scores, key=lambda x: x[1])
