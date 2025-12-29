@@ -685,7 +685,8 @@ Provide a **single concise insight** (4-5 sentences) that includes:
             print(f"Step: Debugging plan at iteration {iteration}")
     
         # Update RT strategy for target=plan (paper Eq.7)
-        pr0=0, com0=0
+        pr0=0
+        com0=0
         R_t, pr1, com1 = self.rt.update_strategy(
             iteration=iteration,
             target="plan",
@@ -737,7 +738,8 @@ Provide a **single concise insight** (4-5 sentences) that includes:
         except Exception as e:
             print(f"Error debugging plan: {e}")
             revised_plan = plan
-            pr0 = 0, com0 =0
+            pr0 = 0
+            com0 = 0
         pr0 += (pr1+pr2)
         com0 += (com1+com2)
         return revised_plan, pr0, com0
@@ -766,7 +768,8 @@ Provide a **single concise insight** (4-5 sentences) that includes:
             max_attempts=self.max_attempts,
             verbose=self.verbose,
         )
-        pr0=0,com0=0
+        pr0=0
+        com0=0
         std_input_prompt = (
             """..."""
             if isinstance(
@@ -829,7 +832,8 @@ Provide a **single concise insight** (4-5 sentences) that includes:
         except Exception as e:
             print(f"Error debugging code: {e}")
             revised_code = code
-            pr0=0,com0=0
+            pr0=0
+            com0=0
         pr0+=(pr1+pr2)
         com0+=(com1+com2)
     
@@ -962,9 +966,9 @@ Provide a **single concise insight** (4-5 sentences) that includes:
                             current_code = revised_code
                             current_code_score = new_score
                             current_test_log = new_test_log
-                        except Exception as e:
-                            print(f"Error updating code: {e}")
-                            continue
+                    except Exception as e:
+                        print(f"Error updating code: {e}")
+                        continue
         # At the end, select the code with the highest score
         if all_codes_with_scores:
             best_code, best_score = max(all_codes_with_scores, key=lambda x: x[1])
