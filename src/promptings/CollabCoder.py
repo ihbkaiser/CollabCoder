@@ -22,6 +22,47 @@ from evaluations.func_evaluate import evaluate_io
 import numpy as np
 from forms import * # Assuming this imports your form models like PlanOutput, etc.
 from multi_thread import multi_thread_task_dict
+
+def manual_parse_to_dict_4_consistency(text):
+    clean_text = text.replace('\n', ' ').strip()
+    
+    result = {"consistency_scores": {}}
+    sections = re.findall(r'"(update plan|update code only)":\s*{(.*?}})', clean_text)
+    
+    for section_name, section_content in sections:
+        result["consistency_scores"][section_name] = {}
+        
+        sub_blocks = re.findall(r'"(plan-code|plan-content|code-content)":\s*{\s*"consistency":\s*([\d.]+),\s*"reasoning":\s*"(.*?)"\s*}', section_content)
+        
+        for sub_name, conf_val, reason_val in sub_blocks:
+            result["consistency_scores"][section_name][sub_name] = {
+                "consistency": float(conf_val),
+                "reasoning": reason_val
+            }
+            
+    return result
+
+def manual_parse_to_dict_4_confidence(text):
+    clean_text = text.replace('\n', ' ').strip()
+
+    result = {"confidence_scores": {}}
+    
+    sections = re.findall(r'"(update plan|update code only)":\s*{(.*?}})', clean_text)
+    
+    for section_name, section_content in sections:
+        result["confidence_scores"][section_name] = {}
+        
+
+        sub_blocks = re.findall(r'"(plan|code|content)":\s*{\s*"confidence":\s*([\d.]+),\s*"reasoning":\s*"(.*?)"\s*}', section_content)
+        
+        for sub_name, conf_val, reason_val in sub_blocks:
+            result["confidence_scores"][section_name][sub_name] = {
+                "confidence": float(conf_val),
+                "reasoning": reason_val
+            }
+            
+    return result
+
 class AnalysisReflection:
     """
     Paper-faithful RT: maintains a persistent debugging strategy R(t) across iterations.
@@ -118,7 +159,7 @@ Return ONLY the updated strategy text.
                 if attempt == max_attempts - 1:
                     # keep previous strategy if update fails
                     return self.strategy, pr_tok, com_tok
-class CoEvolve(BaseStrategy):
+class CollabCoder(BaseStrategy):
     def __init__(
         self,
         k: int = 1,
@@ -163,6 +204,7 @@ class CoEvolve(BaseStrategy):
         Supports varying heading levels (#, ##, ###). If no match, returns the whole text as fallback.
         """
         # Flexible pattern for any number of # followed by the key, then content until next heading or end
+        # pattern = re.compile(r'#+\s*' + re.escape(key) + r'\s*(.*?)(?=#+\s*|\Z)', re.DOTALL | re.IGNORECASE | re.MULTILINE)
         pattern = re.compile(r'#+\s*' + re.escape(key) + r'\s*(.*?)(?=#+\s*|\Z)', re.DOTALL | re.IGNORECASE)
         match = pattern.search(text)
         if match:
@@ -192,6 +234,8 @@ class CoEvolve(BaseStrategy):
             print(f"Parsed code: {parsed_code}...")
         return parsed_code
     def get_sample_io_str(self, item) -> str:
+        import pdb
+        # pdb.set_trace()
         if self.verbose:
             print("Step: Getting sample I/O string")
         if isinstance(self.data, XCodeDataset):
@@ -212,6 +256,7 @@ class CoEvolve(BaseStrategy):
             print(f"Sample I/O: {sample_io}...")
         return sample_io
     def get_problem_understanding(self, item) -> Tuple[str, int, int]:
+        
         if self.verbose:
             print("Step: Generating problem understanding")
         problem_text = self.data.get_prompt(item)
@@ -232,6 +277,8 @@ class CoEvolve(BaseStrategy):
         """
         }
         ]
+        import pdb
+        # pdb.set_trace()
         try:
             if self.verbose:
                 print("Step: Making API call for understanding")
@@ -447,11 +494,36 @@ Provide a **single concise insight** (4-5 sentences) that includes:
 
                 pr_tok += pr_tok_temp
                 com_tok += com_tok_temp
-                plan_simulation = self.parse_key_from_md(response, "Plan Analysis").split("#### Insight")[0].split("#### Simulation")[1].strip() if "#### Insight" in self.parse_key_from_md(response, "Plan Analysis") else ""
-                plan_insight = self.parse_key_from_md(response, "Plan Analysis").split("#### Insight")[1].strip() if "#### Insight" in self.parse_key_from_md(response, "Plan Analysis") else self.parse_key_from_md(response, "Plan Analysis")
-                code_simulation = self.parse_key_from_md(response, "Code Analysis").split("#### Insight")[0].split("#### Simulation")[1].strip() if "#### Insight" in self.parse_key_from_md(response, "Code Analysis") else ""
-                code_insight = self.parse_key_from_md(response, "Code Analysis").split("#### Insight")[1].strip() if "#### Insight" in self.parse_key_from_md(response, "Code Analysis") else self.parse_key_from_md(response, "Code Analysis")
-                content_insight = self.parse_key_from_md(response, "Content Analysis")
+                
+                # import pdb
+                # # pdb.set_trace()
+                
+                # plan_simulation = self.parse_key_from_md(response, " Plan Analysis").split("#### Insight")[0].split("#### Simulation")[1].strip() if "#### Insight" in self.parse_key_from_md(response, "Plan Analysis") else ""
+                # plan_insight = self.parse_key_from_md(response, "Plan Analysis").split("#### Insight")[1].strip() if "#### Insight" in self.parse_key_from_md(response, "Plan Analysis") else self.parse_key_from_md(response, "Plan Analysis")
+                # code_simulation = self.parse_key_from_md(response, "Code Analysis").split("#### Insight")[0].split("#### Simulation")[1].strip() if "#### Insight" in self.parse_key_from_md(response, "Code Analysis") else ""
+                # code_insight = self.parse_key_from_md(response, "Code Analysis").split("#### Insight")[1].strip() if "#### Insight" in self.parse_key_from_md(response, "Code Analysis") else self.parse_key_from_md(response, "Code Analysis")
+                # content_insight = self.parse_key_from_md(response, "Content Analysis")
+                try:
+                    plan_simulation = response.split("### Plan Analysis")[1].split("#### Simulation")[1].split("#### Insight")[0].strip("\n")
+                except:
+                    plan_simulation = None
+                try:
+                    plan_insight = response.split("### Plan Analysis")[1].split("#### Simulation")[1].split("#### Insight")[1].split("### Code Analysis")[0].strip("\n")
+                except:
+                    plan_insight = None
+                try:
+                    code_simulation = response.split("### Code Analysis")[1].split("#### Simulation")[1].split("#### Insight")[0].strip("\n")
+                except:
+                    code_simulation = None
+                try:
+                    code_insight = response.split("### Code Analysis")[1].split("#### Simulation")[1].split("#### Insight")[1].split("### Content Analysis")[0].strip("\n")
+                except:
+                    code_insight = None
+                try:
+                    content_insight = response.split("### Content Analysis")[1].strip("\n")
+                except:
+                    content_insight = None
+
                 analysis_result = {
                     'plan_analysis': {'simulation': plan_simulation, 'insights': plan_insight},
                     'code_analysis': {'simulation': code_simulation, 'insights': code_insight},
@@ -574,6 +646,10 @@ Provide a **single concise insight** (4-5 sentences) that includes:
                     continue
                 json_str = self._fix_invalid_escapes(json_str)
                 data = json.loads(json_str)
+                
+                # import pdb
+                # # pdb.set_trace()
+                
                 confidence_scores = data.get("confidence_scores", {})
                 consistency_scores = data.get("consistency_scores", {})
                 for d in decisions:
@@ -586,12 +662,20 @@ Provide a **single concise insight** (4-5 sentences) that includes:
                         )
                     consistency_result[d] = {}
                     for n1, n2 in pairs:
-                        key = f"{n1}-{n2}"
-                        item = consistency_scores.get(d, {}).get(key, {})
-                        consistency_result[d][key] = ConsistencyOutput(
-                            consistency=float(item.get("consistency", 0.0) or 0.0),
-                            reasoning=str(item.get("reasoning", "") or "")
-                        )
+                        try:
+                            key = f"{n1}-{n2}"
+                            item = consistency_scores.get(d, {}).get(key, {})
+                            consistency_result[d][key] = ConsistencyOutput(
+                                consistency=float(item.get("consistency", 0.0) or 0.0),
+                                reasoning=str(item.get("reasoning", "") or "")
+                            )
+                        except:
+                            key = f"{n2}-{n1}"
+                            item = consistency_scores.get(d, {}).get(key, {})
+                            consistency_result[d][key] = ConsistencyOutput(
+                                consistency=float(item.get("consistency", 0.0) or 0.0),
+                                reasoning=str(item.get("reasoning", "") or "")
+                            )
                 if self.verbose:
                     print("Step: All scores calculated")
                     for d in decisions:
@@ -846,6 +930,7 @@ Provide a **single concise insight** (4-5 sentences) that includes:
         pr_tok = 0
         com_tok = 0
         all_codes_with_scores = [] # List to collect (code, score)
+
         try:
             problem_understanding, pr_tok_u, com_tok_u = self.get_problem_understanding(item)
             pr_tok += pr_tok_u
@@ -920,6 +1005,8 @@ Provide a **single concise insight** (4-5 sentences) that includes:
                         if decision == "update plan":
                             diagnosis = merged_result.get("plan_analysis", {})
 
+                            item['num_of_plan_update'] += 1
+
                             # RT updated + plan refined
                             revised_plan, pr_0, com_0 = self.debug_plan(
                                 iteration=i,
@@ -953,6 +1040,8 @@ Provide a **single concise insight** (4-5 sentences) that includes:
 
                         else:  # "update code only" (default)
                             diagnosis = merged_result.get("code_analysis", {})
+
+                            item['num_of_code_update'] += 1
 
                             revised_code, pr_0, com_0 = self.debug_code(
                                 iteration=i,
@@ -1006,6 +1095,8 @@ Provide a **single concise insight** (4-5 sentences) that includes:
                 print(f"Step: Run attempt {attempt}")
             try:
                 item['api_calls'] = item.get('api_calls', 0)
+                item['num_of_plan_update'] = item.get('num_of_plan_update', 0)
+                item['num_of_code_update'] = item.get('num_of_code_update', 0)
                 result = self._inner_run(item)
                 if self.verbose:
                     print("Step: Run successful")
