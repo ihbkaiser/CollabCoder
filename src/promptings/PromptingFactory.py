@@ -4,7 +4,7 @@ from promptings.Analogical import AnalogicalStrategy
 from promptings.SelfPlanning import SelfPlanningStrategy
 
 from promptings.MapCoder import MapCoder as MapCoder
-from promptings.CoEvolve import CoEvolve
+from promptings.CollabCoder import CollabCoder
 
 
 class PromptingFactory:
@@ -20,7 +20,7 @@ class PromptingFactory:
             return AnalogicalStrategy
         elif prompting_name == "SelfPlanning":
             return SelfPlanningStrategy
-        elif prompting_name == "CoEvolve":
-            return CoEvolve
+        elif prompting_name == "CollabCoder":
+            return CollabCoder
         else:
             raise Exception(f"Unknown prompting name {prompting_name}")
