@@ -1,10 +1,10 @@
-# CoEvolve: Advancing Code Generation with Dynamic Planning and Self-Improving Debugging
+# CollabCoder: Plan-Code Co-Evolution via Collaborative Decision-Making for Efficient Code Generation
 
-This repository contains the implementation of **CoEvolve**, a framework for improving large language model (LLM)-based code generation through **dynamic planning** and **self-improving debugging**.
+This repository contains the implementation of **CollabCoder**, a framework for improving large language model (LLM)-based code generation through **dynamic planning** and **self-improving debugging**.
 
 ## 📊 Benchmarks
 
-We evaluate CoEvolve on four widely used code generation benchmarks:
+We evaluate CollabCoder on four widely used code generation benchmarks:
 
 * **HumanEval**
 * **MBPP**
@@ -25,17 +25,17 @@ data/LiveCodeBench
 Clone the repository and install dependencies:
 
 ```bash
-git clone https://github.com/your-repo/CoEvolve.git
-cd CoEvolve
+git clone https://github.com/your-repo/CollabCoder.git
+cd CollabCoder
 pip install -r requirements.txt
 ```
 
 ## 🚀 Usage
 
-To run CoEvolve on a specific dataset, use the following command:
+To run CollabCoder on a specific dataset, use the following command:
 
 ```bash
-python src/main.py --model GPT4oMini --dataset HumanEval --strategy CoEvolve
+python src/main.py --model GPT4oMini --dataset HumanEval --strategy CollabCoder
 ```
 
 * Replace `--dataset HumanEval` with one of:
@@ -46,8 +46,8 @@ python src/main.py --model GPT4oMini --dataset HumanEval --strategy CoEvolve
 
 ```bash
 # Run on MBPP
-python src/main.py --model GPT4oMini --dataset MBPP --strategy CoEvolve
+python src/main.py --model GPT4oMini --dataset MBPP --strategy CollabCoder
 
 # Run on LiveCodeBench
-python src/main.py --model GPT4oMini --dataset LCB --strategy CoEvolve
+python src/main.py --model GPT4oMini --dataset LCB --strategy CollabCoder
 ```
