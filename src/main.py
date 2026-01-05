@@ -38,7 +38,7 @@ parser.add_argument(
         "SelfPlanning",
         "Analogical",
         "MapCoder",
-        "CoEvolve",
+        "CollabCoder",
     ]
 )
 parser.add_argument(
